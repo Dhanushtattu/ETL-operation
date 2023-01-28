@@ -1,0 +1,138 @@
+
+----------------------------------------S3-------------------------------------------------------------------
+
+* Create Bucket in S3
+* load memberships.json, organization.json, person.json into S3
+
+-----------------------------------------In EMR cluster-----------------------------------------------------
+-->Create Cluster
+
+--> loading file into dataframe
+df = spark.read.json("s3://finalcapstoneproject/memberships.json")
+df1 = spark.read.json("s3://finalcapstoneproject/organizations.json")
+df2 = spark.read.json("s3://finalcapstoneproject/persons.json")
+
+--------------------------------------------------------------------
+-->performing Joins on persons and memberships table using person_id
+
+ans=df2.join(df,df.person_id ==  df2.id,"inner") 
+--------------------------------------------------------------------
+-->Change the name of id to org_id in organisatio table
+
+df1 = df1.withColumnRenamed('id', 'org_id')
+
+--------------------------------------------------------------------
+-->Performing Join on org_id and organisation_id from pervious ans join table
+
+sample=ans.join(df1,ans.organization_id ==  df1.org_id,"inner") 
+
+--------------------------------------------------------------------
+-->Remove person_id, org_id fields from previous joined table:
+
+sample = sample.drop('person_id', 'org_id')
+
+--------------------------------------------------------------------
+-->To remove duplicate columns/redundant fields
+
+duplicatecols = list('ad')
+cols_new =[]
+seen = set()
+for c in sample.columns:
+	cols_new.append('{}_dup'.format(c) if c in seen else c)
+	seen.add(c)
+	
+sam=sample.toDF(*cols_new).select(*[c for c in cols_new if not c.endswith('_dup')]) 
+
+-------------------------------------------------------------------
+-->drop all the array columns except contact details
+
+sam = sam.drop("identifiers","images","links","other_names")
+
+-------------------------------------------------------------------
+-->split the sam table into 2 table
+ex = sam.select("contact_details")
+sam = sam.drop("contact_details")
+
+--------------------------------------------------------------------
+-->to add id to both tables
+
+from pyspark.sql.functions import monotonically_increasing_id
+ex1 = ex.select("*").withColumn("id",monotonically_increasing_id())
+sam1 = sam.select("*").withColumn("id",monotonically_increasing_id())
+#cdrest=ex1.join(sam1,ex1.id ==  sam1.id,"inner")
+
+--------------------------------------------------------------------
+-->to break the array columns of contact details 
+
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+spark = SparkSession.builder.appName("sparkdf").getOrCreate()
+ans = ex1.select(ex1.id,explode_outer(ex1.contact_details))
+ans.show()
+
+df4= ans.select("id","col.*")
+df4.show()
+
+df5 = df4.sort(df4.id.asc())
+df5.show()
+--------------------------------------------------------------------
+-->to load into parquet format
+--> without partitioning
+
+sam1.write.parquet("s3://finalcapstoneproject/finalans")
+
+-->with partitioning
+
+sam1.write.partitionBy("gender").parquet("s3://finalcapstoneproject/finalanspartioned")
+df4.write.partitionBy("type").parquet("s3://finalcapstoneproject/finalcontactpartioned")
+
+---------------------------------------------------------In RedShift------------------------------------------------------------------------------------------
+
+-->loading unpartitioned table into redshift from S3
+-> ans table
+create table ans(birth_date varchar(1000),death_date varchar(1000),family_name varchar(1000),gender varchar(1000),given_name varchar(1000),id bigint,image varchar(1000),name varchar(1000),
+sort_name varchar(1000),area_id varchar(1000),end_date varchar(1000),legislative_period_id varchar(1000),on_behalf_of_id varchar(1000),organization_id varchar(1000),role varchar(1000),start_date varchar(1000),classification varchar(1000),seats bigint,type varchar(1000));
+
+copy ans from 's3://finalcapstoneproject/finalans/' iam_role 'arn:aws:iam::751867243191:role/capstones3toredshift' FORMAT AS PARQUET;
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------
+-->loading partioned table into table into redshift from S3
+
+-> Male table
+create table ans_male(birth_date varchar(1000),death_date varchar(1000),family_name varchar(1000),given_name varchar(1000),id bigint,image varchar(1000),name varchar(1000),
+sort_name varchar(1000),area_id varchar(1000),end_date varchar(1000),legislative_period_id varchar(1000),on_behalf_of_id varchar(1000),organization_id varchar(1000),role varchar(1000),start_date varchar(1000),classification varchar(1000),seats bigint,type varchar(1000));
+
+copy ans_male from 's3://finalcapstoneproject/finalanspartioned/gender=male/' iam_role 'arn:aws:iam::751867243191:role/capstones3toredshift' FORMAT AS PARQUET;
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------
+->female table
+
+create table ans_female(birth_date varchar(1000),death_date varchar(1000),family_name varchar(1000),given_name varchar(1000),id bigint,image varchar(1000),name varchar(1000),
+sort_name varchar(1000),area_id varchar(1000),end_date varchar(1000),legislative_period_id varchar(1000),on_behalf_of_id varchar(1000),organization_id varchar(1000),role varchar(1000),start_date varchar(1000),classification varchar(1000),seats bigint,type varchar(1000));
+
+copy ans_female from 's3://finalcapstoneproject/finalanspartioned/gender=female/' iam_role 'arn:aws:iam::751867243191:role/capstones3toredshift' FORMAT AS PARQUET;
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------
+
+-->for contact details which were partitioned on the basis of type(phone,fax,twitter)
+
+--------------------------------------------------------------------------------------
+->type -phone
+
+create table cont_phone(id bigint,value varchar(1000));
+
+copy cont_phone from 's3://finalcapstoneproject/finalcontactpartioned/type=phone/' iam_role 'arn:aws:iam::751867243191:role/capstones3toredshift' FORMAT AS PARQUET;
+
+------------------------------------------------------------------------------------------
+->type -fax
+
+create table cont_fax(id bigint,value varchar(1000));
+
+copy cont_fax from 's3://finalcapstoneproject/finalcontactpartioned/type=fax/' iam_role 'arn:aws:iam::751867243191:role/capstones3toredshift' FORMAT AS PARQUET;
+
+--------------------------------------------------------------------------------------------
+->type -twitter
+
+create table cont_twitter(id bigint,value varchar(1000));
+
+copy cont_twitter from 's3://finalcapstoneproject/finalcontactpartioned/type=twitter/' iam_role 'arn:aws:iam::751867243191:role/capstones3toredshift' FORMAT AS PARQUET;
